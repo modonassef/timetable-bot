@@ -1,0 +1,23 @@
+name: Daily timetable
+
+on:
+  schedule:
+    # Cron times are in UTC. Vienna is UTC+2 in summer and UTC+1 in winter, so this
+    # runs at both 05:00 and 06:00 UTC, and bot.py only sends on the run that lands
+    # at 07:xx Vienna time (--only-hour 7). Mon-Fri only.
+    - cron: "0 5 * * 1-5"
+    - cron: "0 6 * * 1-5"
+  workflow_dispatch: # manual run from the Actions tab - always sends
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python bot.py ${{ github.event_name == 'schedule' && '--only-hour 7' || '' }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
