@@ -94,7 +94,8 @@ def main():
         return
 
     load_env_file()
-    send(os.environ["TELEGRAM_BOT_TOKEN"], os.environ["TELEGRAM_CHAT_ID"], message)
+    # .strip() guards against stray spaces/newlines pasted into GitHub secrets
+    send(os.environ["TELEGRAM_BOT_TOKEN"].strip(), os.environ["TELEGRAM_CHAT_ID"].strip(), message)
     print("Sent.")
 
 
