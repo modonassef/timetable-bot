@@ -65,6 +65,36 @@ def unescape_ical(text):
                 .replace("\\,", ",").replace("\\;", ";").replace("\\\\", "\\").strip())
 
 
+COURSE_TYPES = {
+    "VL": "Lecture", "VO": "Lecture", "UE": "Exercise", "KV": "Lecture + Exercise",
+    "KS": "Course", "KO": "Tutorial", "SE": "Seminar", "PS": "Proseminar",
+    "PR": "Lab", "VK": "Intensive course", "IK": "Interactive course",
+}
+
+
+def tidy_summary(summary):
+    """'VL Hands-on AI I / Rainer Dangl / (365211/2026W)' -> ('Hands-on AI I', 'Lecture, Dangl')
+    'Course-Exam / VL Hands-on AI II / Rainer Dangl / (...)' -> ('📝 Exam: Hands-on AI II', 'Dangl')"""
+    summary = re.sub(r"\s+", " ", summary)
+    parts = [p.strip() for p in summary.split(" / ")]
+    if parts and re.fullmatch(r"\(.*\)?", parts[-1]):  # drop "(365211/2026W)"
+        parts.pop()
+    is_exam = bool(parts) and parts[0] == "Course-Exam"
+    if is_exam:
+        parts.pop(0)
+    if not parts:
+        return summary, ""
+    kind, _, title = parts[0].partition(" ")
+    if kind not in COURSE_TYPES:
+        kind, title = "", parts[0]
+    title = title.replace(" - Level according to CEFR", "")
+    lecturers = ", ".join(name.split()[-1] for name in " / ".join(parts[1:]).split(",") if name.strip())
+    if is_exam:
+        return f"📝 Exam: {title}", lecturers
+    detail = ", ".join(x for x in (COURSE_TYPES.get(kind, ""), lecturers) if x)
+    return title, detail
+
+
 def fetch_ical_classes(url, tz_name):
     url = url.strip().replace("webcal://", "https://", 1)
     request = urllib.request.Request(url, headers={"User-Agent": "timetable-bot"})
@@ -84,12 +114,19 @@ def fetch_ical_classes(url, tz_name):
             continue
         start = parse_ical_time(*props["DTSTART"], tz)
         end = parse_ical_time(*props.get("DTEND", props["DTSTART"]), tz)
+        subject, detail = tidy_summary(unescape_ical(props.get("SUMMARY", ("", "Class"))[1]))
+        room = unescape_ical(props.get("LOCATION", ("", ""))[1]).strip(" -")
+        # Session notes like "1. Exam" or "HS 2 moved to HS 1". Exam entries only
+        # carry the unregistration deadline there, which isn't useful in the morning.
+        info = "" if subject.startswith("📝") else unescape_ical(props.get("DESCRIPTION", ("", ""))[1])
         classes.append({
             "date": start.strftime("%Y-%m-%d"),
             "start": start.strftime("%H:%M"),
             "end": end.strftime("%H:%M"),
-            "subject": unescape_ical(props.get("SUMMARY", ("", "Class"))[1]),
-            "room": unescape_ical(props.get("LOCATION", ("", ""))[1]) or "room not listed",
+            "subject": subject,
+            "detail": detail,
+            "room": room or "room not listed",
+            "info": info[:120],
         })
     return merge_rooms(classes)
 
@@ -98,14 +135,30 @@ def merge_rooms(classes):
     """Combine sessions that only differ by room (exams spread over several halls)."""
     merged = {}
     for c in classes:
-        key = (c["date"], c["start"], c["end"], c["subject"])
+        key = (c["date"], c["start"], c["end"], c["subject"], c.get("detail", ""))
         if key in merged:
             if c["room"] not in merged[key]["room"].split(" / "):
                 merged[key]["room"] += " / " + c["room"]
                 merged[key]["note"] = EXAM_NOTE
         else:
             merged[key] = dict(c)
-    return list(merged.values())
+    classes = list(merged.values())
+
+    # When you're registered for an exam, KUSSS lists it twice: the course session
+    # (all halls) and your exam registration (your hall). Show them as one entry.
+    exams = {(c["date"], c["start"], c["subject"][len("📝 Exam: "):]): c
+             for c in classes if c["subject"].startswith("📝 Exam: ")}
+    result = []
+    for c in classes:
+        exam = exams.get((c["date"], c["start"], c["subject"]))
+        if exam:
+            exam["info"] = exam["info"] or c.get("info", "")
+            exam["all_rooms"] = c["room"]
+            continue
+        if "exam" in c.get("info", "").lower():
+            c.pop("note", None)  # KUSSS already says it's an exam
+        result.append(c)
+    return result
 
 
 def build_message(classes, skip_dates, day, warning=None):
@@ -121,7 +174,16 @@ def build_message(classes, skip_dates, day, warning=None):
         return f"{header}\n\nNo classes today 🎉"
     lines = []
     for c in todays:
-        line = f"🕘 {c['start']}–{c['end']}  <b>{escape(c['subject'])}</b>\n      📍 {escape(c['room'])}"
+        line = f"🕘 {c['start']}–{c['end']}  <b>{escape(c['subject'])}</b>"
+        if c.get("detail"):
+            line += f" ({escape(c['detail'])})"
+        if c.get("all_rooms"):
+            line += f"\n      📍 Your hall: {escape(c['room'])}"
+            line += f"\n      🏛️ All halls: {escape(c['all_rooms'])}"
+        else:
+            line += f"\n      📍 {escape(c['room'])}"
+        if c.get("info"):
+            line += f"\n      ℹ️ {escape(c['info'])}"
         if c.get("note"):
             line += f"\n      ⚠️ {escape(c['note'])}"
         lines.append(line)
@@ -147,9 +209,18 @@ def main():
     else:
         day = today_in(tz_name)
 
-    if "--only-hour" in args and day.hour != int(args[args.index("--only-hour") + 1]):
-        print(f"It's {day:%H:%M} locally - not the send hour, skipping.")
-        return
+    if "--only-hour" in args:
+        # GitHub runs both a 05:00 and a 06:00 UTC cron. Decide from which cron
+        # *triggered* this run (not the clock), since GitHub often starts runs late.
+        send_hour = int(args[args.index("--only-hour") + 1])
+        offset = int(day.utcoffset().total_seconds() // 3600) if day.utcoffset() else 0
+        target_utc_hour = (send_hour - offset) % 24
+        cron = os.environ.get("TRIGGER_CRON", "")
+        cron_hour = int(cron.split()[1]) if cron else day.astimezone(timezone.utc).hour
+        if cron_hour != target_utc_hour:
+            print(f"Triggered by the {cron_hour:02d}:00 UTC cron; today's send is the "
+                  f"{target_utc_hour:02d}:00 UTC one ({send_hour:02d}:00 local), skipping.")
+            return
 
     if day.weekday() >= 5:
         print("Weekend - nothing to send.")

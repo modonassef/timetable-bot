@@ -3,8 +3,9 @@ name: Daily timetable
 on:
   schedule:
     # Cron times are in UTC. Vienna is UTC+2 in summer and UTC+1 in winter, so this
-    # runs at both 05:00 and 06:00 UTC, and bot.py only sends on the run that lands
-    # at 07:xx Vienna time (--only-hour 7). Mon-Fri only.
+    # runs at both 05:00 and 06:00 UTC, and bot.py only sends from the cron that
+    # matches 07:00 Vienna time today (--only-hour 7). It goes by which cron fired,
+    # not the clock, so GitHub starting a run late doesn't cause a skip. Mon-Fri only.
     - cron: "0 5 * * 1-5"
     - cron: "0 6 * * 1-5"
   workflow_dispatch: # manual run from the Actions tab - always sends
@@ -22,3 +23,4 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           KUSSS_ICAL_URL: ${{ secrets.KUSSS_ICAL_URL }}
+          TRIGGER_CRON: ${{ github.event.schedule }}
