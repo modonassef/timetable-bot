@@ -8,8 +8,9 @@ Usage:
   python bot.py              send today's classes
   python bot.py --dry-run    print the message instead of sending
   python bot.py --date 2026-10-19 --dry-run   preview a specific day
-  python bot.py --only-hour 7   only send if it's currently 07:xx in the
+  python bot.py --only-hour 1   only send from the cron run meant for 01:xx in the
                                 schedule's timezone (handles summer/winter time)
+  python bot.py --silent        send without a notification sound
 """
 import json
 import os
@@ -190,9 +191,10 @@ def build_message(classes, skip_dates, day, warning=None):
     return f"{header}\n\n" + "\n\n".join(lines)
 
 
-def send(token, chat_id, text):
+def send(token, chat_id, text, silent=False):
     data = urllib.parse.urlencode(
-        {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+        {"chat_id": chat_id, "text": text, "parse_mode": "HTML",
+         "disable_notification": "true" if silent else "false"}
     ).encode()
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     urllib.request.urlopen(url, data, timeout=30).read()
@@ -247,7 +249,8 @@ def main():
         return
 
     # .strip() guards against stray spaces/newlines pasted into GitHub secrets
-    send(os.environ["TELEGRAM_BOT_TOKEN"].strip(), os.environ["TELEGRAM_CHAT_ID"].strip(), message)
+    send(os.environ["TELEGRAM_BOT_TOKEN"].strip(), os.environ["TELEGRAM_CHAT_ID"].strip(),
+         message, silent="--silent" in args)
     print("Sent.")
 
 

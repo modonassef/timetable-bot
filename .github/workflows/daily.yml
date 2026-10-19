@@ -2,13 +2,15 @@ name: Daily timetable
 
 on:
   schedule:
+    # Sends at 01:23 Vienna time, silently, so it's waiting when you wake up even if
+    # GitHub starts the run hours late (it often does). Odd minute = less busy slot.
     # Cron times are in UTC. Vienna is UTC+2 in summer and UTC+1 in winter, so this
-    # runs at both 05:00 and 06:00 UTC, and bot.py only sends from the cron that
-    # matches 07:00 Vienna time today (--only-hour 7). It goes by which cron fired,
-    # not the clock, so GitHub starting a run late doesn't cause a skip. Mon-Fri only.
-    - cron: "0 5 * * 1-5"
-    - cron: "0 6 * * 1-5"
-  workflow_dispatch: # manual run from the Actions tab - always sends
+    # runs at both 23:23 UTC (the evening before) and 00:23 UTC, and bot.py only sends
+    # from the cron that matches 01:23 Vienna time today (--only-hour 1). It goes by
+    # which cron fired, not the clock, so a late start doesn't cause a skip.
+    - cron: "23 23 * * 0-4" # Sun-Thu UTC evening = Mon-Fri Vienna night (summer time)
+    - cron: "23 0 * * 1-5"  # Mon-Fri (winter time)
+  workflow_dispatch: # manual run from the Actions tab - always sends, with sound
 
 jobs:
   send:
@@ -18,7 +20,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python bot.py ${{ github.event_name == 'schedule' && '--only-hour 7' || '' }}
+      - run: python bot.py ${{ github.event_name == 'schedule' && '--only-hour 1 --silent' || '' }}
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
